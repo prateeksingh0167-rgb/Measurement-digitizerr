@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Measurement Digitizer</title>
+<style>
+:root{--blue:#2f6f9f;--head:#dce8f4;--green:#e7f0dc;--bg:#eef2f5;--border:#888}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:Arial,sans-serif;color:#111}
+.toolbar{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid #bbb;padding:9px;display:flex;gap:7px;flex-wrap:wrap}
+button,.file{border:1px solid #777;background:#fff;border-radius:7px;padding:9px 11px;font-weight:700;font-size:14px}
+button.primary{background:var(--blue);color:white;border-color:var(--blue)}button:disabled{opacity:.55}
+.file input{display:none}.status{width:100%;font-size:12px;color:#555}.keyrow{padding:8px 10px;background:#f7f7f7;border-bottom:1px solid #ccc;font-size:12px}
+.keyrow input{width:min(520px,100%);padding:8px;border:1px solid #aaa;border-radius:6px}.keyrow small{display:block;margin-top:4px;color:#666}
+.wrap{max-width:1500px;margin:10px auto;padding:0 8px}.sheet{background:#fff;padding:10px;margin-bottom:15px;box-shadow:0 1px 6px #0002}
+.title{text-align:center;font-weight:800;font-size:18px;margin:2px 0 7px}.meta{display:grid;grid-template-columns:80px 1fr 50px 1fr;gap:5px;font-size:12px;align-items:center;margin-bottom:7px}.meta input{width:100%;padding:5px;border:1px solid #aaa}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) 100px;gap:6px}
+table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:8px}th,td{border:1px solid var(--border);height:15px;padding:1px 2px;text-align:center}th{background:var(--head);height:20px}
+td.edit{cursor:text;background:#fff}td.edit:focus{outline:2px solid #5b9bc5;background:#fffbe0}
+.total{border:1px solid #777;display:flex;flex-direction:column;min-height:100%}.total h3{font-size:10px;text-align:center;margin:0;padding:5px;background:var(--green);border-bottom:1px solid #777}.total div{flex:1;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px}
+.grand{text-align:center;border:1px solid #777;padding:7px;margin-top:7px;font-weight:800;font-size:13px}.note{font-size:8px;margin-top:6px;color:#555}
+.thumbbar{display:flex;gap:7px;overflow:auto;padding:7px;background:#fff;border-bottom:1px solid #ccc}.thumb{border:1px solid #aaa;border-radius:5px;padding:5px;min-width:100px;font-size:11px}.thumb img{width:90px;height:60px;object-fit:cover;display:block;margin-bottom:4px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}.total{min-height:75px}.meta{grid-template-columns:70px 1fr}.meta label:nth-of-type(2){grid-column:1}.meta input:nth-of-type(2){grid-column:2}.title{font-size:16px}table{font-size:9px}th,td{height:18px}.wrap{padding:0 5px}}
+@media print{
+ body{background:#fff}.toolbar,.keyrow,.thumbbar{display:none}.wrap{margin:0;padding:0}.sheet{box-shadow:none;margin:0;padding:7mm 6mm;height:277mm;overflow:hidden;page-break-after:always}.sheet:last-child{page-break-after:auto}
+ .grid{grid-template-columns:repeat(3,minmax(0,1fr)) 23mm;gap:3mm}table{font-size:6.7px}th,td{height:4.2mm}th{height:5mm}.title{font-size:14px}.meta{font-size:8px}.grand{font-size:9px}.note{font-size:6px}
+}
+</style>
+</head>
+<body>
+<div class="toolbar">
+<label class="file">📷 Upload 1–3 photos <input id="files" type="file" accept="image/*" multiple></label>
+<button id="ai" class="primary">🤖 AI Read Sheet</button>
+<button id="calc">🧮 Recalculate SFT</button>
+<button id="pdf">📄 Export PDF</button>
+<button id="print">🖨 Print</button>
+<button id="save">💾 Save</button>
+<button id="load">↩ Load</button>
+<button id="clear">Clear</button>
+<div class="status" id="status">Ready. Upload the 1–3 handwritten pages, then tap AI Read Sheet.</div>
+</div>
+<div class="keyrow">
+<b>AI key (first setup only):</b>
+<input id="key" type="password" placeholder="Paste your Gemini API key here">
+<button id="remember">Save key on this device</button>
+<small>The key is entered at runtime; it is not stored in GitHub. For safety, use a restricted API key and do not put it into index.html. Google advises keeping Gemini API keys confidential and using a backend for production. </small>
+</div>
+<div class="thumbbar" id="thumbs"></div>
+<div class="wrap" id="app"></div>
+
+<script>
+const N=450, PER=50, PAGE=150;
+let data=Array.from({length:N},(_,i)=>({no:i+1,size:"",sft:""}));
+let consignee="", date="";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function sft(size){const m=String(size).replace(/\s+/g,"").replace(/[×X]/g,"x").match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i);return m?(+m[1]*+m[2]/144).toFixed(2):""}
+function calcAll(){data.forEach(r=>r.sft=sft(r.size));render();}
+
+function render(){
+ const app=$("app");app.innerHTML="";
+ for(let p=0;p<3;p++){
+  const sh=document.createElement("section");sh.className="sheet";
+  sh.innerHTML=`<div class="title">GRANITE / MARBLE MEASUREMENT SHEET</div>
+  <div class="meta"><label>Consignee :</label><input class="cons" value="${esc(consignee)}"><label>Date :</label><input class="dt" value="${esc(date)}"></div>
+  <div class="grid"></div><div class="grand">GRAND TOTAL SFT OF 450 ENTRIES = <span class="grandv"></span></div>
+  <div class="note"><b>Note:</b> Digitized copy. Verify handwritten/OCR values before final use. SFT = Length × Width ÷ 144.</div>`;
+  app.appendChild(sh);
+  const grid=sh.querySelector(".grid");
+  for(let b=0;b<3;b++){
+   const start=p*PAGE+b*PER,t=document.createElement("table");
+   t.innerHTML="<thead><tr><th style='width:15%'>S.No</th><th style='width:53%'>SIZE</th><th style='width:32%'>SFT</th></tr></thead><tbody></tbody>";
+   const tb=t.querySelector("tbody");
+   for(let i=0;i<PER;i++){let r=data[start+i],tr=document.createElement("tr");
+    tr.innerHTML=`<td>${r.no}</td><td class="edit" contenteditable="true" data-i="${start+i}" data-f="size">${esc(r.size)}</td><td class="edit" contenteditable="true" data-i="${start+i}" data-f="sft">${esc(r.sft)}</td>`;
+    tb.appendChild(tr)
+   }
+   grid.appendChild(t)
+  }
+  const box=document.createElement("div");box.className="total";box.innerHTML=`<h3>TOTAL SFT</h3><div>${data.slice(p*PAGE,p*PAGE+PAGE).reduce((a,r)=>a+(+r.sft||0),0).toFixed(3)}</div>`;grid.appendChild(box);
+  sh.querySelector(".cons").oninput=e=>consignee=e.target.value;
+  sh.querySelector(".dt").oninput=e=>date=e.target.value;
+  sh.querySelector(".grandv").textContent=data.reduce((a,r)=>a+(+r.sft||0),0).toFixed(3);
+ }
+}
+document.addEventListener("input",e=>{
+ if(e.target.matches("[data-i]")){
+  const i=+e.target.dataset.i,f=e.target.dataset.f;data[i][f]=e.target.innerText.trim();
+  if(f==="size"){data[i].sft=sft(data[i].size);e.target.parentElement.querySelector('[data-f="sft"]').innerText=data[i].sft}
+  updateTotalsOnly();
+ }
+});
+function updateTotalsOnly(){document.querySelectorAll(".total div").forEach((x,p)=>x.textContent=data.slice(p*PAGE,p*PAGE+PAGE).reduce((a,r)=>a+(+r.sft||0),0).toFixed(3));document.querySelectorAll(".grandv").forEach(x=>x.textContent=data.reduce((a,r)=>a+(+r.sft||0),0).toFixed(3))}
+$("calc").onclick=calcAll;
+
+$("files").onchange=e=>{
+ const files=[...e.target.files].slice(0,3);$("thumbs").innerHTML="";
+ files.forEach((f,i)=>{let d=document.createElement("div");d.className="thumb";d.innerHTML=`<b>Page ${i+1}</b><img src="${URL.createObjectURL(f)}"><span>${esc(f.name)}</span>`;$("thumbs").appendChild(d)});
+ $("status").textContent=files.length+" photo(s) selected.";
+};
+
+async function file64(file){return new Promise((res,rej)=>{let r=new FileReader();r.onload=()=>res({data:r.result.split(",")[1],mime:file.type||"image/jpeg"});r.onerror=rej;r.readAsDataURL(file)})}
+
+$("ai").onclick=async()=>{
+ const files=[...$("files").files].slice(0,3); if(!files.length){alert("Upload the handwritten pages first.");return}
+ const key=$("key").value.trim()||localStorage.getItem("gemini_key")||"";
+ if(!key){alert("For AI reading, paste a Gemini API key in the AI key box. I am not putting a secret key into the public GitHub website.");return}
+ $("ai").disabled=true;$("status").textContent="AI is reading the handwritten measurement pages…";
+ try{
+  const imgs=await Promise.all(files.map(file64));
+  const prompt=`You are extracting a GRANITE / MARBLE measurement sheet from handwritten photos.
+There are up to 3 photos. Each photo contains THREE vertical table blocks, 50 entries per block.
+Photo 1 corresponds to S.No 1-150; photo 2 to 151-300; photo 3 to 301-450.
+Each block has columns S.No, SIZE, SFT. Read ONLY the handwritten SIZE values; calculate SFT yourself.
+A SIZE is length x width, e.g. "89x33". Preserve the numbers exactly as visibly written. Do not invent missing values.
+If an entry is visibly X, crossed out, or unreadable, return size:"X" or size:"" respectively.
+If handwriting is overwritten, prefer the final visible value only when reasonably clear; otherwise leave blank.
+Return ONLY valid JSON with this exact shape:
+{"rows":[{"no":1,"size":"89x33"},...]}.
+Return exactly 450 rows, numbered 1 through 450. Do not include markdown or explanation.`;
+  const parts=[{text:prompt},...imgs.map(x=>({inlineData:{mimeType:x.mime,data:x.data}}))];
+  const body={contents:[{role:"user",parts}],generationConfig:{responseMimeType:"application/json",responseSchema:{type:"OBJECT",properties:{rows:{type:"ARRAY",items:{type:"OBJECT",properties:{no:{type:"INTEGER"},size:{type:"STRING"}},required:["no","size"]}}},required:["rows"]}}};
+  const resp=await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":key},body:JSON.stringify(body)});
+  if(!resp.ok)throw new Error(await resp.text());
+  const j=await resp.json(),txt=j.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";
+  const parsed=JSON.parse(txt),rows=parsed.rows||[];
+  if(rows.length<1)throw new Error("No rows returned.");
+  rows.forEach((r,k)=>{const i=Math.max(0,Math.min(N-1,(+r.no||k+1)-1));data[i].size=String(r.size||"").trim();data[i].sft=sft(data[i].size)});
+  render();$("status").textContent=`AI read ${rows.length} rows. Please check highlighted/uncertain handwriting before exporting.`;
+ }catch(err){console.error(err);$("status").textContent="AI reading failed.";alert("AI reading failed. Check your API key, internet connection, or API quota. Details: "+err.message)}
+ finally{$("ai").disabled=false}
+};
+
+$("remember").onclick=()=>{const k=$("key").value.trim();if(k){localStorage.setItem("gemini_key",k);alert("Saved on this device.");}};
+$("save").onclick=()=>{localStorage.setItem("measurement_data",JSON.stringify({data,consignee,date}));alert("Sheet saved on this device.")};
+$("load").onclick=()=>{try{const x=JSON.parse(localStorage.getItem("measurement_data"));if(!x)throw 0;data=x.data;consignee=x.consignee||"";date=x.date||"";render();alert("Loaded.")}catch(e){alert("No saved sheet found.")}};
+$("clear").onclick=()=>{if(confirm("Clear all 450 entries?")){data=Array.from({length:N},(_,i)=>({no:i+1,size:"",sft:""}));render()}};
+$("print").onclick=()=>window.print();
+$("pdf").onclick=()=>window.print();
+render();
+</script>
+</body></html>
