@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Granite / Marble Measurement Digitizer</title>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<style>
+:root{
+  --line:#8a8a8a; --head:#dce8f4; --accent:#e8f0dc;
+  --bg:#eef2f5; --blue:#1f5f8b;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:#111}
+.toolbar{
+  position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid #bbb;
+  padding:10px;display:flex;gap:7px;flex-wrap:wrap;align-items:center
+}
+button,.fileBtn{
+  border:1px solid #777;border-radius:7px;padding:10px 13px;background:#fff;
+  cursor:pointer;font-weight:700;font-size:14px
+}
+button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}
+button.danger{background:#fff0f0;color:#9b0000}
+.fileBtn input{display:none}
+#status{font-size:13px;color:#555;margin-left:auto}
+.wrap{max-width:1500px;margin:12px auto;padding:0 9px}
+.help{
+  background:#eef4f8;border:1px solid #ccd7df;border-radius:6px;padding:9px;
+  color:#555;font-size:12px;margin-bottom:12px
+}
+.sheet{
+  background:#fff;padding:14px;margin-bottom:20px;box-shadow:0 2px 8px #0002;
+  page-break-after:always
+}
+.title{text-align:center;font-size:20px;font-weight:700;margin:0 0 9px}
+.meta{
+  display:grid;grid-template-columns:90px 1fr 60px 1fr;gap:7px;
+  align-items:center;font-size:12px;margin-bottom:9px
+}
+.meta label{font-weight:700}
+.meta input{width:100%;border:1px solid #aaa;padding:6px;border-radius:2px}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr 105px;gap:7px}
+.block{min-width:0}
+table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:9px}
+th,td{border:1px solid var(--line);height:16px;padding:1px 3px;text-align:center;overflow:hidden}
+th{background:var(--head);font-weight:700;height:20px}
+td[contenteditable=true]{background:#fff;cursor:text}
+td[contenteditable=true]:focus{outline:2px solid #5aa0d0;background:#fffde5}
+.totalBox{border:1px solid #777;display:flex;flex-direction:column;min-height:100%;background:#fff}
+.totalHead{background:var(--accent);border-bottom:1px solid #777;text-align:center;font-weight:700;padding:5px;font-size:10px}
+.totalValue{flex:1;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700}
+.grand{text-align:center;border:1px solid #777;padding:7px;margin-top:8px;font-size:14px;font-weight:700}
+.note{font-size:9px;margin-top:7px;color:#444}
+.progress{width:190px;height:8px;background:#ddd;border-radius:5px;overflow:hidden;display:inline-block;vertical-align:middle;margin-left:5px}
+.bar{height:100%;width:0;background:#2f79a8}
+.preview{
+  display:none;background:#fff;border:1px solid #bbb;padding:8px;margin:10px 0
+}
+.preview img{max-width:160px;max-height:100px;margin:4px;border:1px solid #aaa}
+@media(max-width:900px){
+  .grid{grid-template-columns:1fr}
+  .totalBox{min-height:80px}
+  .meta{grid-template-columns:70px 1fr 50px 1fr}
+}
+@media print{
+  body{background:#fff}
+  .toolbar,.help,.preview{display:none!important}
+  .wrap{margin:0;padding:0}
+  .sheet{box-shadow:none;margin:0;padding:7mm 6mm;height:277mm;overflow:hidden}
+  .sheet:last-child{page-break-after:auto}
+  .grid{grid-template-columns:1fr 1fr 1fr 24mm;gap:3.5mm}
+  table{font-size:7px}
+  th,td{height:4.35mm}
+  th{height:5mm}
+  .title{font-size:15px}
+  .grand{font-size:11px}
+  .note{font-size:7px}
+}
+</style>
+</head>
+
+<body>
+<div class="toolbar">
+  <label class="fileBtn">📷 Upload 1–3 photos
+    <input id="photos" type="file" accept="image/*" multiple>
+  </label>
+  <button class="primary" id="ocrBtn">🔎 Read photos</button>
+  <button id="recalcBtn">🧮 Recalculate SFT</button>
+  <button id="addBtn">➕ Add 50 rows</button>
+  <button id="exportPdf">📄 Export PDF</button>
+  <button id="printBtn">🖨 Print</button>
+  <button id="saveBtn">💾 Save</button>
+  <button id="loadBtn">↩ Load</button>
+  <button class="danger" id="clearBtn">Clear</button>
+  <span id="status">Ready</span>
+</div>
+
+<div class="wrap">
+  <div class="help">
+    <b>Workflow:</b> upload handwritten pages → Read photos → review/edit any SIZE or SFT cell →
+    export PDF. OCR is a first pass; always verify handwritten measurements.
+    <br><b>SFT formula:</b> Length × Width ÷ 144.
+  </div>
+  <div id="preview" class="preview"></div>
+  <div id="app"></div>
+</div>
+
+<script>
+"use strict";
+
+const INITIAL_ROWS = 450;
+const ROWS_PER_BLOCK = 50;
+const BLOCKS_PER_PAGE = 3;
+const ROWS_PER_PAGE = ROWS_PER_BLOCK * BLOCKS_PER_PAGE;
+const PAGE_COUNT = 3;
+
+let data = Array.from({length: INITIAL_ROWS}, (_,i)=>({
+  no:i+1, size:"", sft:""
+}));
+let consignee = "";
+let date = "";
+
+const $ = id => document.getElementById(id);
+
+function esc(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+/* FIXED SFT CALCULATION */
+function calc(size){
+  const clean = String(size ?? "")
+    .trim()
+    .replace(/[×X]/g,"x")
+    .replace(/\s+/g,"");
+
+  const m = clean.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i);
+  return m ? (Number(m[1]) * Number(m[2]) / 144).toFixed(2) : "";
+}
+
+function normalizeSize(a,b){
+  let x = String(a).replace(/[Oo]/g,"0").replace(/[Il]/g,"1");
+  let y = String(b).replace(/[Oo]/g,"0").replace(/[Il]/g,"1");
+  x = x.replace(/[^\d.]/g,"");
+  y = y.replace(/[^\d.]/g,"");
+  if(!x || !y) return "";
+  const nx = Number(x), ny = Number(y);
+  if(nx < 20 || nx > 250 || ny < 10 || ny > 100) return "";
+  return `${x}x${y}`;
+}
+
+function total(start,count){
+  return data.slice(start,start+count)
+    .reduce((s,r)=>s+(Number(r.sft)||0),0);
+}
+
+function grandTotal(){
+  return data.reduce((s,r)=>s+(Number(r.sft)||0),0);
+}
+
+function render(){
+  const app = $("app");
+  app.innerHTML = "";
+
+  for(let p=0;p<PAGE_COUNT;p++){
+    const sheet = document.createElement("section");
+    sheet.className = "sheet";
+
+    sheet.innerHTML = `
+      <div class="title">GRANITE / MARBLE MEASUREMENT SHEET</div>
+      <div class="meta">
+        <label>Consignee :</label>
+        <input class="consignee" value="${esc(consignee)}">
+        <label>Date :</label>
+        <input class="date" value="${esc(date)}">
+      </div>
+      <div class="grid"></div>
+      <div class="grand">
+        GRAND TOTAL SFT OF ${data.length} ENTRIES =
+        <span class="grandVal"></span>
+      </div>
+      <div class="note">
+        <b>Note:</b> Digitized copy. Verify handwritten/OCR values before final use.
+        SFT = Length × Width ÷ 144.
+      </div>
+    `;
+
+    app.appendChild(sheet);
+    const grid = sheet.querySelector(".grid");
+
+    for(let b=0;b<BLOCKS_PER_PAGE;b++){
+      const start = p*ROWS_PER_PAGE + b*ROWS_PER_BLOCK;
+      const table = document.createElement("table");
+
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th style="width:16%">S.No</th>
+            <th style="width:52%">SIZE</th>
+            <th style="width:32%">SFT</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+
+      const tb = table.querySelector("tbody");
+
+      for(let i=0;i<ROWS_PER_BLOCK;i++){
+        const idx = start+i;
+        const r = data[idx];
+        if(!r) continue;
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.no}</td>
+          <td contenteditable="true" spellcheck="false"
+              data-idx="${idx}" data-field="size">${esc(r.size)}</td>
+          <td contenteditable="true" spellcheck="false"
+              data-idx="${idx}" data-field="sft">${esc(r.sft)}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      grid.appendChild(table);
+    }
+
+    const box = document.createElement("div");
+    box.className = "totalBox";
+    box.innerHTML = `
+      <div class="totalHead">TOTAL SFT</div>
+      <div class="totalValue">${total(p*ROWS_PER_PAGE,ROWS_PER_PAGE).toFixed(3)}</div>
+    `;
+    grid.appendChild(box);
+
+    sheet.querySelector(".consignee").oninput = e => {
+      consignee = e.target.value;
+    };
+    sheet.querySelector(".date").oninput = e => {
+      date = e.target.value;
+    };
+
+    sheet.querySelector(".grandVal").textContent = grandTotal().toFixed(3);
+  }
+}
+
+function updateTotals(){
+  document.querySelectorAll(".totalBox").forEach((box,p)=>{
+    box.querySelector(".totalValue").textContent =
+      total(p*ROWS_PER_PAGE,ROWS_PER_PAGE).toFixed(3);
+  });
+
+  document.querySelectorAll(".grandVal").forEach(el=>{
+    el.textContent = grandTotal().toFixed(3);
+  });
+}
+
+document.addEventListener("input", e=>{
+  const c = e.target;
+
+  if(c.matches("[contenteditable][data-idx]")){
+    const idx = Number(c.dataset.idx);
+    const field = c.dataset.field;
+
+    data[idx][field] = c.innerText.trim();
+
+    if(field === "size"){
+      data[idx].sft = calc(data[idx].size);
+      const sftCell = c.parentElement.querySelector('[data-field="sft"]');
+      if(sftCell) sftCell.innerText = data[idx].sft;
+    }
+
+    updateTotals();
+  }
+});
+
+$("recalcBtn").onclick = ()=>{
+  data.forEach(r=>{
+    if(String(r.size).trim()) r.sft = calc(r.size);
+  });
+  render();
+  $("status").textContent = "SFT recalculated";
+};
+
+$("addBtn").onclick = ()=>{
+  const old = data.length;
+  for(let i=0;i<50;i++){
+    data.push({no:old+i+1,size:"",sft:""});
+  }
+  render();
+  $("status").textContent = `${data.length} rows`;
+};
+
+$("clearBtn").onclick = ()=>{
+  if(!confirm("Clear all measurements?")) return;
+  data = Array.from({length: INITIAL_ROWS}, (_,i)=>({
+    no:i+1,size:"",sft:""
+  }));
+  consignee = "";
+  date = "";
+  render();
+  $("status").textContent = "Cleared";
+};
+
+$("saveBtn").onclick = ()=>{
+  localStorage.setItem("measurementSheet", JSON.stringify({
+    data,consignee,date
+  }));
+  $("status").textContent = "Saved on this device";
+};
+
+$("loadBtn").onclick = ()=>{
+  try{
+    const x = JSON.parse(localStorage.getItem("measurementSheet"));
+    if(!x) throw new Error("none");
+    data = Array.isArray(x.data) ? x.data : data;
+    data.forEach((r,i)=>r.no=i+1);
+    consignee = x.consignee || "";
+    date = x.date || "";
+    render();
+    $("status").textContent = "Loaded";
+  }catch(e){
+    alert("No saved sheet found on this device.");
+  }
+};
+
+$("printBtn").onclick = ()=>window.print();
+
+$("photos").onchange = e=>{
+  const files = [...e.target.files].slice(0,3);
+  if(e.target.files.length > 3){
+    alert("Please select a maximum of 3 photos.");
+  }
+  $("status").textContent =
+    files.length ? `${files.length} photo(s) selected` : "Ready";
+
+  const preview = $("preview");
+  preview.innerHTML = "";
+
+  files.forEach(file=>{
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(file);
+    preview.appendChild(img);
+  });
+  preview.style.display = files.length ? "block" : "none";
+};
+
+/*
+  Improve the photo before OCR:
+  - upscale
+  - grayscale
+  - increase contrast
+  - threshold lightly
+*/
+async function preprocessImage(file){
+  const bitmap = await createImageBitmap(file);
+
+  const maxWidth = 2400;
+  const scale = Math.min(2, maxWidth / bitmap.width);
+  const w = Math.max(800, Math.round(bitmap.width * scale));
+  const h = Math.round(bitmap.height * (w / bitmap.width));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+
+  const ctx = canvas.getContext("2d", {willReadFrequently:true});
+  ctx.drawImage(bitmap,0,0,w,h);
+
+  const image = ctx.getImageData(0,0,w,h);
+  const d = image.data;
+
+  for(let i=0;i<d.length;i+=4){
+    const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+
+    /* contrast */
+    let v = (gray - 128) * 1.35 + 128;
+
+    /* keep writing dark, paper light */
+    if(v < 92) v = 0;
+    else if(v > 210) v = 255;
+
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+
+  ctx.putImageData(image,0,0);
+  return canvas;
+}
+
+/*
+  OCR parser:
+  - handles 89x33, 89 x 33, 89×33
+  - tolerates common handwriting OCR mistakes
+  - removes unrealistic dimensions
+  - keeps dimensions in OCR reading order
+*/
+function parseOCR(text){
+  let t = String(text || "")
+    .replace(/[×✕✖]/g,"x")
+    .replace(/[oO]/g,"0")
+    .replace(/[lI|]/g,"1");
+
+  const found = [];
+
+  /*
+    Main pattern. The look around it allows spaces and punctuation
+    that Tesseract commonly inserts.
+  */
+  const re = /(\d{2,3})\s*[^0-9a-zA-Z]{0,3}\s*x\s*[^0-9a-zA-Z]{0,3}\s*(\d{2,3})/gi;
+
+  for(const m of t.matchAll(re)){
+    const size = normalizeSize(m[1],m[2]);
+    if(size) found.push(size);
+  }
+
+  /*
+    Fallback for strings where Tesseract reads "89 33"
+    instead of "89x33". This is deliberately conservative.
+  */
+  if(found.length === 0){
+    const nums = [...t.matchAll(/\b(\d{2,3})\b/g)].map(m=>Number(m[1]));
+
+    for(let i=0;i<nums.length-1;i++){
+      const a=nums[i], b=nums[i+1];
+      if(a>=20 && a<=250 && b>=10 && b<=100){
+        const size=normalizeSize(a,b);
+        if(size){
+          found.push(size);
+          i++;
+        }
+      }
+    }
+  }
+
+  return found;
+}
+
+$("ocrBtn").onclick = async ()=>{
+  const files = [...$("photos").files].slice(0,3);
+
+  if(!files.length){
+    alert("Upload 1–3 handwritten photos first.");
+    return;
+  }
+
+  $("ocrBtn").disabled = true;
+  $("status").innerHTML =
+    'Preparing OCR <span class="progress"><span class="bar" id="bar"></span></span>';
+
+  try{
+    const worker = await Tesseract.createWorker("eng");
+
+    await worker.setParameters({
+      tessedit_pageseg_mode: "6",
+      preserve_interword_spaces: "1"
+    });
+
+    let allText = "";
+
+    for(let i=0;i<files.length;i++){
+      $("status").innerHTML =
+        `Reading photo ${i+1} of ${files.length}
+        <span class="progress"><span class="bar" id="bar"></span></span>`;
+
+      const processed = await preprocessImage(files[i]);
+
+      const result = await worker.recognize(processed);
+      allText += "\n" + result.data.text;
+
+      const bar = $("bar");
+      if(bar) bar.style.width = `${((i+1)/files.length)*100}%`;
+    }
+
+    await worker.terminate();
+
+    const sizes = parseOCR(allText);
+
+    /*
+      Put OCR results into the 450-row sheet sequentially.
+      Existing rows are replaced from row 1 onward.
+    */
+    for(let i=0;i<data.length;i++){
+      if(i < sizes.length){
+        data[i].size = sizes[i];
+        data[i].sft = calc(sizes[i]);
+      }
+    }
+
+    render();
+
+    $("status").textContent =
+      sizes.length
+      ? `OCR complete — ${sizes.length} measurements found. Review the cells.`
+      : "OCR complete — no measurements detected. Try a clearer photo.";
+
+  }catch(err){
+    console.error(err);
+    $("status").textContent = "OCR failed";
+    alert(
+      "OCR could not read the photo. Try a brighter, clearer photo taken straight above the sheet. " +
+      "You can still enter/edit measurements manually."
+    );
+  }finally{
+    $("ocrBtn").disabled = false;
+  }
+};
+
+/* PDF EXPORT */
+$("exportPdf").onclick = ()=>{
+  const {jsPDF} = window.jspdf;
+
+  const pdf = new jsPDF({
+    orientation:"landscape",
+    unit:"mm",
+    format:"a4"
+  });
+
+  const W=297, H=210;
+  const margin=7, gap=3, totalW=23;
+  const blockW=(W-2*margin-totalW-3*gap)/3;
+  const rowH=3.35, headerH=4.5, top=26;
+
+  for(let page=0;page<PAGE_COUNT;page++){
+
+    if(page>0) pdf.addPage("a4","landscape");
+
+    pdf.setTextColor(0);
+    pdf.setDrawColor(120);
+
+    pdf.setFont("helvetica","bold");
+    pdf.setFontSize(13);
+    pdf.text(
+      "GRANITE / MARBLE MEASUREMENT SHEET",
+      W/2,9,{align:"center"}
+    );
+
+    pdf.setFontSize(6);
+    pdf.setFont("helvetica","normal");
+    pdf.text("Consignee :",12,15);
+    pdf.line(28,15,78,15);
+
+    pdf.text("Date :",210,15);
+    pdf.line(222,15,275,15);
+
+    pdf.text("As per original scan",W/2,15,{align:"center"});
+
+    const starts=[
+      page*150,
+      page*150+50,
+      page*150+100
+    ];
+
+    starts.forEach((start,b)=>{
+      const x=margin+b*(blockW+gap);
+
+      pdf.setFillColor(220,232,244);
+      pdf.rect(x,top,blockW,headerH,"F");
+      pdf.setDrawColor(120);
+      pdf.rect(x,top,blockW,headerH);
+
+      pdf.setFont("helvetica","bold");
+      pdf.setFontSize(6);
+
+      pdf.text("S.No",x+blockW*.08,top+3,{align:"center"});
+      pdf.text("SIZE",x+blockW*.46,top+3,{align:"center"});
+      pdf.text("SFT",x+blockW*.86,top+3,{align:"center"});
+
+      pdf.setFont("helvetica","normal");
+      pdf.setFontSize(5.3);
+
+      for(let i=0;i<50;i++){
+        const y=top+headerH+i*rowH;
+        const r=data[start+i] || {no:start+i+1,size:"",sft:""};
+
+        pdf.rect(x,y,blockW,rowH);
+        pdf.line(
+          x+blockW*.16,y,
+          x+blockW*.16,y+rowH
+        );
+        pdf.line(
+          x+blockW*.68,y,
+          x+blockW*.68,y+rowH
+        );
+
+        pdf.text(
+          String(r.no),
+          x+blockW*.08,y+2.35,
+          {align:"center"}
+        );
+
+        pdf.text(
+          String(r.size||""),
+          x+blockW*.42,y+2.35,
+          {align:"center"}
+        );
+
+        pdf.text(
+          String(r.sft||""),
+          x+blockW*.84,y+2.35,
+          {align:"center"}
+        );
+      }
+    });
+
+    const tx=W-margin-totalW;
+
+    pdf.setFillColor(232,240,220);
+    pdf.rect(
+      tx,top,totalW,
+      headerH+50*rowH,
+      "F"
+    );
+
+    pdf.setDrawColor(100);
+    pdf.rect(
+      tx,top,totalW,
+      headerH+50*rowH
+    );
+
+    pdf.setFont("helvetica","bold");
+    pdf.setFontSize(6);
+    pdf.text(
+      "TOTAL SFT",
+      tx+totalW/2,top+3,
+      {align:"center"}
+    );
+
+    pdf.setFontSize(12);
+    pdf.text(
+      total(page*150,150).toFixed(3),
+      tx+totalW/2,
+      top+headerH+80,
+      {align:"center"}
+    );
+
+    pdf.setFont("helvetica","normal");
+    pdf.setFontSize(5);
+    pdf.text(
+      "Note: Digitized copy; verify handwritten/OCR values.",
+      margin,H-7
+    );
+
+    pdf.setFont("helvetica","bold");
+    pdf.setFontSize(8);
+    pdf.text(
+      `GRAND TOTAL SFT OF ${data.length} ENTRIES = ${grandTotal().toFixed(3)}`,
+      W/2,H-5,
+      {align:"center"}
+    );
+
+    pdf.setFont("helvetica","normal");
+    pdf.setFontSize(5);
+    pdf.text(
+      `Page ${page+1} of ${PAGE_COUNT}`,
+      W-margin,H-7,
+      {align:"right"}
+    );
+  }
+
+  pdf.save("Granite_Marble_Measurement_Sheet.pdf");
+};
+
+render();
+</script>
+</body>
+</html>
